@@ -1,3 +1,5 @@
+// Created by Jacob Aguilar and David Smical
+
 #include <iostream>
 #include <fstream>
 #include <vector>
