@@ -7,130 +7,197 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
-#include <sstream>  // Add this for std::istringstream
-#include <iterator> // Add this for std::istream_iterator
+#include <sstream>
+#include <iterator>
+#include <cstdlib> 
+#include <sys/stat.h> 
+#include <cerrno> 
 
- 
-#define MAX_INPUT_SIZE 1024
-#define MAX_TOKENS 100
- 
-void execute_command(const std::string& token);
+// Function declarations
+void execute_command(const std::string& input);
 void batch_mode(std::istream& batch_stream);
-void end_execution();
- 
+bool change_directory(const std::string& path);
+void execute_piped_command(const std::vector<std::string>& cmd1, const std::vector<std::string>& cmd2);
+
 int main(int argc, char *argv[]) {
+    // Check if batch mode is enabled by passing a file as an argument
     if (argc == 2) {
-        // Batch mode
         std::ifstream batch_file(argv[1]);
         if (!batch_file.is_open()) {
             perror("Error opening batch file");
             exit(EXIT_FAILURE);
         }
- 
         batch_mode(batch_file);
         batch_file.close();
-    } else {
-        // Interactive mode
-        std::string input;
-        while (true) {
-            std::cout << "$lopeShell: "; // Change this prompt as needed
-            std::getline(std::cin, input);
- 
-            // Tokenize input based on semicolons
-            std::vector<std::string> tokens;
-            size_t pos = 0;
-            while ((pos = input.find(';')) != std::string::npos) {
-                tokens.push_back(input.substr(0, pos));
-                input.erase(0, pos + 1);
-            }
-            tokens.push_back(input);
- 
-            // Execute each command
-            for (const auto& token : tokens) {
-                execute_command(token);
-            }
-        }
+        std::cout << "Finished executing batch file. Entering interactive mode..." << std::endl;
     }
- 
+
+    // Interactive shell mode
+    std::cout << "Entering interactive mode. Type 'exit' to quit." << std::endl;
+    std::string input;
+    while (true) {
+        std::cout << "$lopeShell: ";
+        std::getline(std::cin, input);
+        if (input == "exit") {
+            break;
+        }
+        execute_command(input);
+    }
     return 0;
 }
 
-// Add this function to handle the cd command
+// Function to display the first 'numLines' lines of a file
+void head_command(const std::string& filename, int numLines = 10) {
+    std::ifstream file(filename);
+    if (!file.is_open()) {
+        std::cerr << "Error opening file: " << filename << std::endl;
+        return;
+    }
+    
+    std::string line;
+    int lineCount = 0;
+    while (lineCount < numLines && std::getline(file, line)) {
+        std::cout << line << std::endl;
+        ++lineCount;
+    }
+    file.close();
+}
+
+// Function to display the last 'numLines' lines of a file
+void tail_command(const std::string& filename, int numLines = 10) {
+    std::ifstream file(filename);
+    if (!file.is_open()) {
+        std::cerr << "Error opening file: " << filename << std::endl;
+        return;
+    }
+
+    std::vector<std::string> lines;
+    std::string line;
+    while (std::getline(file, line)) {
+        lines.push_back(line);
+        if (lines.size() > numLines) {
+            lines.erase(lines.begin());
+        }
+    }
+    
+    for (const auto& l : lines) {
+        std::cout << l << std::endl;
+    }
+    file.close();
+}
+
+// Function to change the current working directory
 bool change_directory(const std::string& path) {
     if (chdir(path.c_str()) == 0) {
-        return true; // Successfully changed directory
+        return true;
     } else {
         perror("cd failed");
-        return false; // Failed to change directory
+        return false;
     }
 }
 
-void execute_command(const std::string& token) {
-    // Split the token into words to check for the cd command
-    std::istringstream iss(token);
-    std::vector<std::string> args((std::istream_iterator<std::string>(iss)), std::istream_iterator<std::string>());
+// Function to check if a given path is a directory
+bool is_directory(const std::string& path) {
+    struct stat statbuf;
+    if (stat(path.c_str(), &statbuf) != 0) return false;
+    return S_ISDIR(statbuf.st_mode);
+}
 
-    // Handle the cd command separately
-    if (!args.empty() && args[0] == "cd") {
-        if (args.size() > 1) {
-            change_directory(args[1]);
-        } else {
-            std::cerr << "cd command requires a path argument" << std::endl;
-        }
-        return; // Don't proceed with forking
-    }
-
-    pid_t pid = fork();
+// Function to move or rename a file
+bool move_file(const std::string& source, const std::string& destination) {
+    std::string final_destination = destination;
     
-    if (pid == -1) {
-        perror("Fork failed");
-        exit(EXIT_FAILURE);
-    } else if (pid == 0) {
-        // Convert args to char* array for execvp
-        char* argv[args.size() + 1];
-        for (size_t i = 0; i < args.size(); ++i) {
-            argv[i] = const_cast<char*>(args[i].c_str());
-        }
-        argv[args.size()] = NULL;
+    // If the destination is a directory, append the filename
+    if (is_directory(destination)) {
+        size_t pos = source.find_last_of("/\\");
+        std::string filename = (pos == std::string::npos) ? source : source.substr(pos + 1);
+        final_destination = destination + (destination.back() == '/' ? "" : "/") + filename;
+    }
+    
+    // Rename the file (move operation)
+    if (rename(source.c_str(), final_destination.c_str()) != 0) {
+        std::cerr << "Error moving/renaming file: " << strerror(errno) << std::endl;
+        return false;
+    }
+    return true;
+}
 
-        if (execvp(argv[0], argv) == -1) {
-            perror("Command execution failed");
-            exit(EXIT_FAILURE);
-        }
+// Function to execute a given command
+void execute_command(const std::string& input) {
+    std::istringstream iss(input);
+    std::vector<std::string> tokens{std::istream_iterator<std::string>{iss}, std::istream_iterator<std::string>{}};
+    if (tokens.empty()) return;
+
+    if (tokens[0] == "cd") {
+        if (tokens.size() < 2) std::cerr << "cd: missing operand" << std::endl;
+        else change_directory(tokens[1]);
+    } else if (tokens[0] == "pwd") {
+        char cwd[1024];
+        if (getcwd(cwd, sizeof(cwd)) != nullptr) std::cout << cwd << std::endl;
+        else perror("pwd failed");
+    } else if (tokens[0] == "echo") {
+        for (size_t i = 1; i < tokens.size(); ++i) std::cout << tokens[i] << " ";
+        std::cout << std::endl;
+    } else if (tokens[0] == "procs") {
+        system("ps -e");
     } else {
-        // Parent process
-        waitpid(pid, NULL, 0);
+        int pid = fork();
+        if (pid == 0) {
+            std::vector<char*> args;
+            for (auto& arg : tokens) args.push_back(&arg[0]);
+            args.push_back(nullptr);
+            execvp(args[0], args.data());
+            perror("execvp");
+            exit(EXIT_FAILURE);
+        } else if (pid > 0) {
+            waitpid(pid, nullptr, 0);
+        } else {
+            perror("fork");
+        }
     }
 }
 
+// Function to handle piped commands
+void execute_piped_command(const std::vector<std::string>& cmd1, const std::vector<std::string>& cmd2) {
+    int pipefd[2];
+    pid_t pid1, pid2;
+
+    if (pipe(pipefd) == -1) {
+        perror("pipe");
+        exit(EXIT_FAILURE);
+    }
+
+    pid1 = fork();
+    if (pid1 == 0) {
+        dup2(pipefd[1], STDOUT_FILENO);
+        close(pipefd[0]);
+        execvp(cmd1[0].c_str(), (char* const*)cmd1.data());
+        perror("execvp cmd1");
+        exit(EXIT_FAILURE);
+    }
+
+    pid2 = fork();
+    if (pid2 == 0) {
+        dup2(pipefd[0], STDIN_FILENO);
+        close(pipefd[1]);
+        execvp(cmd2[0].c_str(), (char* const*)cmd2.data());
+        perror("execvp cmd2");
+        exit(EXIT_FAILURE);
+    }
+
+    close(pipefd[0]);
+    close(pipefd[1]);
+    waitpid(pid1, NULL, 0);
+    waitpid(pid2, NULL, 0);
+}
+
+// Function to execute commands in batch mode
 void batch_mode(std::istream& batch_stream) {
     std::string line;
- 
     while (std::getline(batch_stream, line)) {
-        // Display and execute each line in the batch file
-        std::cout << "$lopeShell: " << line << std::endl;
- 
-        // Tokenize input based on semicolons
-        std::vector<std::string> tokens;
-        size_t pos = 0;
-        while ((pos = line.find(';')) != std::string::npos) {
-            tokens.push_back(line.substr(0, pos));
-            line.erase(0, pos + 1);
+        if (line == "exit") {
+            exit(EXIT_SUCCESS);
         }
-        tokens.push_back(line);
- 
-        // Execute each command
-        for (const auto& token : tokens) {
-            execute_command(token);
-        }
+        execute_command(line);
     }
- 
-    // Wait for all child processes to complete before returning to prompt
-    while (wait(NULL) > 0)
-        ;
-}
- 
-void end_execution() {
-    // You can implement any cleanup or additional functionality here
-    exit(EXIT_SUCCESS);
 }
