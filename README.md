@@ -1,2 +1,2 @@
 # commandlineint
-Command Line Interpreter that runs on UNIX/LIinux
+My partner David Smical and I developed a command-line interpreter (CLI) with integrated file system support, enabling users to manage files and execute commands efficiently. The system supports essential operations such as file creation, deletion, reading, writing, and movement while ensuring data integrity and structured storage. Additionally, it includes built-in shell commands like cd, pwd, echo, and process management utilities such as procs. The CLI also supports command piping, allowing for seamless execution of linked commands.
